@@ -7,7 +7,10 @@ import sqlite3
 from typing import Optional
 from dotenv import load_dotenv
 from telegram import Update, InputFile, ReplyKeyboardMarkup
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
+from telegram.ext import (
+    ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler,
+    ConversationHandler, filters
+)
 
 # === LOAD ENVIRONMENT VARIABLES ===
 load_dotenv()
@@ -16,10 +19,11 @@ load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
-GEMINI_ENDPOINT = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+ADMIN_ID = int(os.getenv("ADMIN_ID", "6079753756"))  # ID Telegram của admin
 
+GEMINI_ENDPOINT = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
 DB_PATH = "fruits.db"
-# Dùng GIF online thay vì file cục bộ (có thể thay URL này bằng GIF bạn thích)
+
 WELCOME_GIF_URL = "https://media0.giphy.com/media/v1.Y2lkPTc5MGI3NjExOHltNTQzczM1bWN6c2VnMnQzb3YyMDJmMTJqcjJjN2hrNHI5MHd4ayZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/k5gCYqpdDZEEpW5Lyz/giphy.gif"
 
 # === PROMPT ===
@@ -30,6 +34,20 @@ VIETNAMESE_PROMPT = (
 )
 
 # === DATABASE ===
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS fruits (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE,
+            price TEXT,
+            description TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
 def get_fruit_info(fruit_name: str) -> Optional[dict]:
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -40,6 +58,14 @@ def get_fruit_info(fruit_name: str) -> Optional[dict]:
         return {"name": row[0], "price": row[1], "description": row[2]}
     return None
 
+def list_all_fruits() -> list:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, name, price, description FROM fruits ORDER BY id ASC")
+    fruits = cursor.fetchall()
+    conn.close()
+    return fruits
+
 # === GEMINI ===
 def _build_gemini_request_body(image_b64: str, mime_type: str) -> dict:
     return {
@@ -48,12 +74,7 @@ def _build_gemini_request_body(image_b64: str, mime_type: str) -> dict:
                 "role": "user",
                 "parts": [
                     {"text": VIETNAMESE_PROMPT},
-                    {
-                        "inline_data": {
-                            "mime_type": mime_type,
-                            "data": image_b64,
-                        }
-                    },
+                    {"inline_data": {"mime_type": mime_type, "data": image_b64}},
                 ],
             }
         ]
@@ -62,20 +83,13 @@ def _build_gemini_request_body(image_b64: str, mime_type: str) -> dict:
 def call_gemini_api(image_bytes: bytes, mime_type: str) -> Optional[str]:
     if not GEMINI_API_KEY:
         return None
-
     image_b64 = base64.b64encode(image_bytes).decode("utf-8")
     body = _build_gemini_request_body(image_b64, mime_type)
     params = {"key": GEMINI_API_KEY}
-
     try:
         response = requests.post(GEMINI_ENDPOINT, params=params, json=body, timeout=60)
         response.raise_for_status()
         data = response.json()
-    except requests.RequestException as e:
-        print("❌ Lỗi khi gọi Gemini API:", e)
-        return None
-
-    try:
         candidates = data.get("candidates", [])
         if candidates:
             parts = candidates[0].get("content", {}).get("parts", [])
@@ -83,16 +97,13 @@ def call_gemini_api(image_bytes: bytes, mime_type: str) -> Optional[str]:
                 if "text" in part:
                     return part["text"].strip().lower()
     except Exception as e:
-        print("⚠️ Lỗi xử lý phản hồi:", e)
-
+        print("❌ Gemini API Error:", e)
     return None
 
 # === TELEGRAM HANDLERS ===
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     name = user.first_name or "bạn"
-
-    # Gửi GIF chào mừng từ URL
     try:
         if WELCOME_GIF_URL:
             resp = requests.get(WELCOME_GIF_URL, timeout=20)
@@ -103,78 +114,156 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception:
         pass
 
-    # Gửi box greeting đẹp và giàu màu sắc (dùng emoji) + keyboard nhanh
     greeting_message = (
-        "🍎🍊🍋🍐🍓🍇🍉🍒🍍\n"
-        f"✨ *Xin chào, {name}!* ✨\n\n"
-        "🍏 **PMSshop** — Nhận diện trái cây tự động\n"
-        "🌿 Giá bán • Mô tả • Gợi ý nhanh\n\n"
-        "📸 *Cách dùng nhanh:*\n"
-        "- Gửi 1 bức ảnh trái cây bất kỳ\n"
-        "- Đợi vài giây để hệ thống xử lý\n"
-        "- Nhận kết quả: tên, giá, mô tả ✨\n\n"
-        "💡 Gõ */help* để xem hướng dẫn chi tiết.\n"
-        "🛍️ Chúc bạn mua sắm vui vẻ tại PMSshop!"
+        f"🍎 Xin chào, *{name}!* 🍇\n\n"
+        "🌿 **PMSshop - Nhận diện trái cây tự động** 🌿\n\n"
+        "📸 Gửi 1 bức ảnh trái cây bất kỳ để nhận kết quả!\n"
+        "💰 Xem giá và mô tả chi tiết.\n\n"
+        "🧭 /help để xem hướng dẫn.\n"
     )
 
-    keyboard = ReplyKeyboardMarkup([["/help", "📸 Gửi ảnh"]], resize_keyboard=True)
+    if user.id == ADMIN_ID:
+        greeting_message += "\n🛠️ *Bạn đang đăng nhập với quyền Admin.*\nDùng /admin để xem menu quản lý."
+        keyboard = ReplyKeyboardMarkup([["/admin", "/help"]], resize_keyboard=True)
+    else:
+        keyboard = ReplyKeyboardMarkup([["📸 Gửi ảnh", "/help"]], resize_keyboard=True)
+
     await update.message.reply_text(greeting_message, parse_mode="Markdown", reply_markup=keyboard)
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
         "📖 *Hướng dẫn sử dụng PMSshop*\n\n"
-        "- **Bước 1**: Chụp hoặc chọn một *ảnh trái cây*.\n"
-        "- **Bước 2**: Gửi ảnh trực tiếp vào cuộc trò chuyện này.\n"
-        "- **Bước 3**: Đợi bot *nhận diện* và trả về **tên trái cây**, **giá bán** và **mô tả** (nếu có).\n\n"
-        "🔎 Mẹo: Ảnh rõ nét, nền đơn giản sẽ cho kết quả tốt hơn.\n"
-        "❔ Nếu hệ thống chưa có loại trái cây đó, bot sẽ thông báo để cửa hàng sớm cập nhật."
+        "- **Bước 1**: Gửi ảnh trái cây bạn muốn nhận diện.\n"
+        "- **Bước 2**: Đợi bot xử lý (2–5 giây).\n"
+        "- **Bước 3**: Nhận kết quả gồm *tên*, *giá* và *mô tả sản phẩm*.\n\n"
+        "❗ Nếu sản phẩm chưa có, hệ thống sẽ thông báo để cập nhật."
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    status_msg = await update.message.reply_text("🔍 Đang nhận diện hình ảnh, vui lòng chờ...")
-
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status_msg = await update.message.reply_text("🔍 Đang nhận diện hình ảnh...")
     try:
         photo = update.message.photo[-1]
         file = await context.bot.get_file(photo.file_id)
         image_bytes = await file.download_as_bytearray()
-        mime_type = "image/jpeg"
+        fruit_name = await asyncio.to_thread(call_gemini_api, bytes(image_bytes), "image/jpeg")
     except Exception:
-        await status_msg.edit_text("❌ Không thể tải hình ảnh.")
+        await status_msg.edit_text("❌ Không thể tải ảnh hoặc xử lý.")
         return
 
-    fruit_name = await asyncio.to_thread(call_gemini_api, bytes(image_bytes), mime_type)
-
     if not fruit_name:
-        await status_msg.edit_text("⚠️ Tôi không thể nhận diện chính xác loại trái cây này.")
+        await status_msg.edit_text("⚠️ Không thể nhận diện loại trái cây này.")
         return
 
     info = get_fruit_info(fruit_name)
     if info:
         await status_msg.edit_text(
-            f"🍉 **Kết quả nhận diện:** *{info['name'].capitalize()}*\n"
-            f"💰 **Giá bán:** {info['price']}\n"
-            f"📖 **Mô tả:** {info['description']}",
+            f"🍉 **Kết quả:** *{info['name'].capitalize()}*\n"
+            f"💰 Giá: {info['price']}\n"
+            f"📖 Mô tả: {info['description']}",
             parse_mode="Markdown"
         )
     else:
         await status_msg.edit_text(
-            f"🙇‍♀️ *Xin lỗi quý khách!* Hiện tại sản phẩm **{fruit_name.capitalize()}** "
-            "vẫn chưa có trong danh mục của *PMSshop*. 🍏\n\n"
-            "🛒 *Chúng tôi sẽ sớm cập nhật thêm loại trái cây này để phục vụ quý khách tốt hơn!* 💚",
+            f"🙇‍♀️ Xin lỗi, sản phẩm *{fruit_name.capitalize()}* chưa có trong hệ thống.\n"
+            "🛒 Chúng tôi sẽ cập nhật sớm!",
             parse_mode="Markdown"
         )
 
+# === ADMIN FUNCTIONS ===
+async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("🚫 Bạn không có quyền truy cập.")
+        return
+    menu = (
+        "🛠️ *Menu Quản lý Admin*\n\n"
+        "/addfruit - Thêm trái cây mới\n"
+        "/updatefruit - Cập nhật thông tin\n"
+        "/deletefruit - Xóa sản phẩm\n"
+        "/listfruits - Xem danh sách tất cả\n"
+    )
+    await update.message.reply_text(menu, parse_mode="Markdown")
+
+async def add_fruit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return await update.message.reply_text("🚫 Bạn không có quyền này.")
+    try:
+        args = context.args
+        if len(args) < 3:
+            return await update.message.reply_text("📌 Cú pháp: /addfruit <tên> <giá> <mô tả>")
+        name, price, description = args[0], args[1], " ".join(args[2:])
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("INSERT OR IGNORE INTO fruits (name, price, description) VALUES (?, ?, ?)", (name, price, description))
+        conn.commit()
+        conn.close()
+        await update.message.reply_text(f"✅ Đã thêm sản phẩm *{name}* thành công!", parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Lỗi thêm sản phẩm: {e}")
+
+async def update_fruit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return await update.message.reply_text("🚫 Không có quyền.")
+    try:
+        args = context.args
+        if len(args) < 3:
+            return await update.message.reply_text("📌 Cú pháp: /updatefruit <tên> <giá> <mô tả>")
+        name, price, description = args[0], args[1], " ".join(args[2:])
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE fruits SET price=?, description=? WHERE LOWER(name)=?", (price, description, name.lower()))
+        conn.commit()
+        conn.close()
+        await update.message.reply_text(f"✏️ Đã cập nhật sản phẩm *{name}*!", parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Lỗi cập nhật: {e}")
+
+async def delete_fruit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return await update.message.reply_text("🚫 Không có quyền.")
+    try:
+        args = context.args
+        if not args:
+            return await update.message.reply_text("📌 Cú pháp: /deletefruit <tên>")
+        name = " ".join(args)
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM fruits WHERE LOWER(name)=?", (name.lower(),))
+        conn.commit()
+        conn.close()
+        await update.message.reply_text(f"🗑️ Đã xóa sản phẩm *{name}*!", parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Lỗi xóa: {e}")
+
+async def list_fruits(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return await update.message.reply_text("🚫 Không có quyền.")
+    fruits = list_all_fruits()
+    if not fruits:
+        await update.message.reply_text("📭 Chưa có sản phẩm nào.")
+        return
+    msg = "📋 *Danh sách trái cây:*\n\n"
+    for fid, name, price, desc in fruits:
+        msg += f"{fid}. *{name}* — 💰 {price}\n📖 {desc}\n\n"
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
 # === MAIN ===
 def main():
+    init_db()
     if not TELEGRAM_BOT_TOKEN:
-        raise RuntimeError("Thiếu TELEGRAM_BOT_TOKEN. Vui lòng thêm vào .env")
+        raise RuntimeError("Thiếu TELEGRAM_BOT_TOKEN trong .env")
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("admin", admin_menu))
+    app.add_handler(CommandHandler("addfruit", add_fruit))
+    app.add_handler(CommandHandler("updatefruit", update_fruit))
+    app.add_handler(CommandHandler("deletefruit", delete_fruit))
+    app.add_handler(CommandHandler("listfruits", list_fruits))
     app.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_photo))
-    print("🤖 Bot PMSshop đang chạy... Gửi ảnh trái cây để kiểm tra 🍓")
+
+    print("🤖 Bot PMSshop đang chạy... (Admin có thể thêm/sửa/xóa sản phẩm)")
     app.run_polling()
 
 if __name__ == "__main__":
