@@ -243,8 +243,8 @@ async def list_fruits(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📭 Chưa có sản phẩm nào.")
         return
     msg = "📋 *Danh sách trái cây:*\n\n"
-    for fid, name, price, desc in fruits:
-        msg += f"{fid}. *{name}* — 💰 {price}\n📖 {desc}\n\n"
+    for idx, (_fid, name, price, desc) in enumerate(fruits, start=1):
+        msg += f"{idx}. *{name}* — 💰 {price}\n📖 {desc}\n\n"
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 # === MAIN ===
