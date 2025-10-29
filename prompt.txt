@@ -1,0 +1,58 @@
+# 🧠 MỤC TIÊU
+Tôi muốn bạn tạo **một hệ thống Telegram Bot nhận diện hình ảnh**.
+
+Khi người dùng gửi hình ảnh bất kỳ (vật thể, đồ ăn, trái cây, động vật, đồ dùng, phong cảnh, v.v.),  
+bot sẽ:
+1. Nhận hình ảnh từ người dùng.
+2. Gửi hình ảnh đó đến **Gemini API** (hoặc OpenAI Vision API).
+3. Nhận kết quả nhận diện từ API.
+4. Gửi lại cho người dùng kết quả **bằng tiếng Việt**: mô tả ngắn gọn hình ảnh đó là gì.
+
+---
+
+# ⚙️ YÊU CẦU CỤ THỂ
+- Ngôn ngữ: **Python**
+- Framework: **python-telegram-bot**
+- API được dùng: **Gemini API** (Google Generative AI for Vision)
+- Bot phải xử lý được ảnh JPG, PNG, JPEG.
+- Khi người dùng gửi ảnh → bot gửi tin nhắn “⏳ Đang nhận diện hình ảnh...”
+- Sau khi có kết quả → bot gửi lại:  
+  **Kết quả:** [mô tả ngắn bằng tiếng Việt]
+- Nếu không xác định được → trả về:  
+  **Kết quả:** Xin lỗi, tôi không thể nhận diện chính xác hình ảnh này.
+
+---
+
+# 💬 VÍ DỤ
+Người dùng gửi ảnh: 🍌  
+Bot trả lời:  
+**Kết quả:** Đây là một quả chuối.
+
+Người dùng gửi ảnh: 🐱  
+Bot trả lời:  
+**Kết quả:** Đây là một con mèo.
+
+Người dùng gửi ảnh: Cái bàn  
+Bot trả lời:  
+**Kết quả:** Đây là một chiếc bàn.
+
+---
+
+# 🧩 CẤU TRÚC CODE MONG MUỐN
+Tạo 1 file Python hoàn chỉnh gồm:
+- `import telegram` và `python-telegram-bot`
+- Nhận ảnh từ người dùng
+- Gọi Gemini API bằng HTTP POST (hoặc thư viện chính thức)
+- Đọc phản hồi JSON và trích nội dung mô tả
+- Gửi kết quả về Telegram
+
+---
+
+# 📄 OUTPUT CUỐI CÙNG
+Tạo ra **một file Python hoàn chỉnh, chạy được ngay**, tên là:
+`telegram_image_ai.py`
+
+---
+
+# 🎯 MỤC ĐÍCH SỬ DỤNG
+Tôi sẽ dùng prompt này để yêu cầu AI tạo giúp **bot Telegram nhận diện hình ảnh** và trả về kết quả nhận dạng bằng tiếng Việt cho người dùng.
