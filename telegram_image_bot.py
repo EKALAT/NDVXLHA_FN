@@ -2,6 +2,7 @@ import os
 import base64
 import asyncio
 import requests
+import sqlite3
 from typing import Optional
 from dotenv import load_dotenv
 from telegram import Update
@@ -13,23 +14,30 @@ load_dotenv()
 # === CONFIG ===
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 GEMINI_ENDPOINT = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+
+DB_PATH = "fruits.db"
 
 # === PROMPT ===
 VIETNAMESE_PROMPT = (
     "Bạn là hệ thống nhận diện hình ảnh. "
-    "Hãy mô tả ngắn gọn (1-2 câu) bằng tiếng Việt về đối tượng chính trong hình. "
-    "Nếu có thể, hãy nêu loại vật thể hoặc danh mục. "
-    "Chỉ trả lời nội dung kết quả, không kèm giải thích."
+    "Hãy xác định loại trái cây trong ảnh và trả lại duy nhất tên loại trái cây bằng tiếng Việt, "
+    "không kèm câu giải thích, chỉ 1 từ hoặc cụm từ ngắn (ví dụ: 'chuối', 'xoài', 'cam')."
 )
 
-# === BOT HANDLERS ===
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
-        "👋 Xin chào! Gửi cho tôi một bức ảnh, tôi sẽ giúp bạn nhận diện và mô tả nó bằng tiếng Việt."
-    )
+# === DATABASE ===
+def get_fruit_info(fruit_name: str) -> Optional[dict]:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT name, price, description FROM fruits WHERE LOWER(name)=?", (fruit_name.lower(),))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return {"name": row[0], "price": row[1], "description": row[2]}
+    return None
 
+# === GEMINI ===
 def _build_gemini_request_body(image_b64: str, mime_type: str) -> dict:
     return {
         "contents": [
@@ -70,11 +78,17 @@ def call_gemini_api(image_bytes: bytes, mime_type: str) -> Optional[str]:
             parts = candidates[0].get("content", {}).get("parts", [])
             for part in parts:
                 if "text" in part:
-                    return part["text"].strip()
+                    return part["text"].strip().lower()
     except Exception as e:
         print("⚠️ Lỗi xử lý phản hồi:", e)
 
     return None
+
+# === TELEGRAM HANDLERS ===
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        "🍎 Xin chào! Gửi cho tôi một bức ảnh trái cây 🍇, tôi sẽ nhận diện và cho bạn biết thông tin chi tiết!"
+    )
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     status_msg = await update.message.reply_text("⏳ Đang nhận diện hình ảnh, vui lòng chờ...")
@@ -85,15 +99,29 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         image_bytes = await file.download_as_bytearray()
         mime_type = "image/jpeg"
     except Exception as e:
-        await status_msg.edit_text("**Kết quả:** Không thể tải hình ảnh.", parse_mode="Markdown")
+        await status_msg.edit_text("❌ Không thể tải hình ảnh.", parse_mode="Markdown")
         return
 
-    result_text = await asyncio.to_thread(call_gemini_api, bytes(image_bytes), mime_type)
+    fruit_name = await asyncio.to_thread(call_gemini_api, bytes(image_bytes), mime_type)
 
-    if result_text:
-        await status_msg.edit_text(f"**Kết quả:** {result_text}", parse_mode="Markdown")
+    if not fruit_name:
+        await status_msg.edit_text("⚠️ Tôi không thể nhận diện chính xác loại trái cây này.", parse_mode="Markdown")
+        return
+
+    info = get_fruit_info(fruit_name)
+    if info:
+        await status_msg.edit_text(
+            f"**Kết quả nhận diện:** {info['name'].capitalize()}\n"
+            f"**Giá bán:** {info['price']}\n"
+            f"**Mô tả:** {info['description']}",
+            parse_mode="Markdown"
+        )
     else:
-        await status_msg.edit_text("**Kết quả:** Xin lỗi, tôi không thể nhận diện chính xác hình ảnh này.", parse_mode="Markdown")
+        await status_msg.edit_text(
+            f"**Kết quả nhận diện:** {fruit_name.capitalize()}\n"
+            f"❌ Hiện chưa có thông tin về loại trái cây này trong cơ sở dữ liệu.",
+            parse_mode="Markdown"
+        )
 
 # === MAIN ===
 def main():
@@ -103,7 +131,7 @@ def main():
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_photo))
-    print("🤖 Bot đang chạy... Gửi ảnh đến bot để kiểm tra.")
+    print("🤖 Bot đang chạy... Gửi ảnh trái cây để kiểm tra.")
     app.run_polling()
 
 if __name__ == "__main__":
